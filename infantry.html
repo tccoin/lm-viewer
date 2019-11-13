@@ -1,0 +1,506 @@
+<html>
+
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>步兵模型</title>
+    <meta name="description" content="Share everything.">
+    <meta charset="utf-8">
+    <style>
+        body {
+            margin: 0;
+        }
+
+        .front {
+            position: fixed;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 100%;
+            padding: 6vw 6vw 0 0;
+            /* z-index: 100; */
+            display: flex;
+            align-items: flex-end;
+            flex-direction: column;
+            box-sizing: border-box;
+            /* background: #b1b1b1; */
+            /* box-shadow: 0 16px 24px 2px rgba(0, 0, 0, 0.14), 0 6px 30px 5px rgba(0, 0, 0, 0.12), 0 8px 10px -5px rgba(0, 0, 0, 0.4); */
+        }
+
+        .title {
+            font-size: 7vw;
+            line-height: 2;
+            word-break: break-all;
+            font-weight: bold;
+            font-family: '南宋书局体', '微软雅黑';
+        }
+
+        .text {
+            line-height: 1.5;
+            font-size: 2.5vw;
+            word-break: break-word;
+            max-width: 35vw;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="front">
+        <div class="descriptions">
+            <div class="title" for="main">步兵机器人</div>
+            <div class="text" for="main">步兵机器人是全国大学生机器人大赛RoboMaster机甲大师赛中的主要机器人，可以通过发射小弹丸、激活机关，为全队带来增益。</div>
+            <div class="title" for="gimbal">云台</div>
+            <div class="text" for="gimbal">机器人二轴云台使用了滑环及轴承，可以实现Yaw轴任意旋转。其主要目的是稳定弹丸发射机构及图传视角，使操作更加顺滑。</div>
+            <div class="title" for="judge">裁判系统</div>
+            <div class="text" for="judge">裁判系统是一个全自主的电子判罚系统，具有检测弹丸的攻击伤害，监测机器人底盘运动功率等参数的功能。 </div>
+            <div class="title" for="chassis">底盘</div>
+            <div class="text" for="chassis">底盘采用了麦克纳姆轮，可以实现全向移动及原地自转，使机器人运动更为自由。</div>
+        </div>
+    </div>
+    <script src="lib/leapjs/leap-0.6.4.js"></script>
+    <script src="lib/leapjs/leap-plugins-0.1.6.js"></script>
+    <script src="/js/three.min.js"></script>
+    <script src="/js/MTLLoader.js"></script>
+    <script src="/js/OBJLoader.js"></script>
+    <script src="/js/OrbitControls.js"></script>
+    <script src="/js/slider.js"></script>
+    <script>
+
+        class InfantryViewer {
+            constructor() {
+                // state
+                this.hand = null;
+                this.handPositionX = null;
+                this.handVisibile = true;
+                this.rotatingLock = 0;
+                // config
+                this.config = {
+                    enableControl: false,
+                    cube: false,
+                    cameraPosition: [0, 450, 450],
+                    cameraLookAt: [0, 150, -200],
+                    infantryPosition: [-150, 100, -200],
+                    infantryScale: 25
+                };
+            }
+
+            async init() {
+                this.initLeap();
+                await this.initScene();
+                this.initKeyboardControl();
+                this.see('main');
+                this.animate();
+            }
+
+            initLeap() {
+                this.baseBoneRotation = (new THREE.Quaternion).setFromEuler(
+                    new THREE.Euler(Math.PI / 2, 0, 0)
+                );
+                Leap.loop({ background: true }, {
+                    hand: (hand) => {
+                        if (this.hand && this.hand.id == hand.id) {
+                            this.hand = hand;
+                        } else {
+                            return
+                        }
+                        hand.fingers.forEach((finger) => {
+                            finger.data('boneMeshes').forEach((mesh, i) => {
+                                let bone = finger.bones[i];
+                                mesh.position.fromArray(bone.center());
+                                mesh.setRotationFromMatrix(
+                                    (new THREE.Matrix4).fromArray(bone.matrix())
+                                );
+                                mesh.quaternion.multiply(this.baseBoneRotation);
+                            });
+                            finger.data('jointMeshes').forEach((mesh, i) => {
+                                let bone = finger.bones[i];
+                                if (bone) {
+                                    mesh.position.fromArray(bone.prevJoint);
+                                } else {
+                                    // special case for the finger tip joint sphere:
+                                    bone = finger.bones[i - 1];
+                                    mesh.position.fromArray(bone.nextJoint);
+                                }
+                            });
+                        });
+                        let armMesh = hand.data('armMesh');
+                        armMesh.position.fromArray(hand.arm.center());
+                        armMesh.setRotationFromMatrix(
+                            (new THREE.Matrix4).fromArray(hand.arm.matrix())
+                        );
+                        armMesh.quaternion.multiply(this.baseBoneRotation);
+                        armMesh.scale.x = hand.arm.width / 2;
+                        armMesh.scale.z = hand.arm.width / 4;
+                        this.renderer.render(this.scene, this.camera);
+                    }
+                })
+                    .use('handHold')
+                    .use('handEntry')
+                    .on('handFound', (hand) => {
+                        if (this.hand) {
+                            return
+                        } else {
+                            this.hand = hand;
+                        }
+                        hand.fingers.forEach((finger) => {
+                            let boneMeshes = [];
+                            let jointMeshes = [];
+                            finger.bones.forEach((bone) => {
+                                // create joints
+                                // CylinderGeometry(radiusTop, radiusBottom, height, radiusSegments, heightSegments, openEnded)
+                                let boneMesh = new THREE.Mesh(
+                                    new THREE.CylinderGeometry(5, 5, bone.length),
+                                    new THREE.MeshLambertMaterial()
+                                );
+                                boneMesh.material.color.setHex(0xffffff);
+                                this.scene.add(boneMesh);
+                                boneMeshes.push(boneMesh);
+                            });
+                            for (let i = 0; i < finger.bones.length + 1; i++) {
+                                let jointMesh = new THREE.Mesh(
+                                    new THREE.SphereGeometry(6),
+                                    new THREE.MeshLambertMaterial()
+                                );
+                                jointMesh.material.color.setHex(0x5f9ea0);
+                                this.scene.add(jointMesh);
+                                jointMeshes.push(jointMesh);
+                            }
+                            finger.data('boneMeshes', boneMeshes);
+                            finger.data('jointMeshes', jointMeshes);
+                        });
+                        if (hand.arm) { // 2.0.3+ have arm api,
+                            // CylinderGeometry(radiusTop, radiusBottom, height, radiusSegments, heightSegments, openEnded)
+                            let armMesh = new THREE.Mesh(
+                                new THREE.CylinderGeometry(1, 1, hand.arm.length, 64),
+                                new THREE.MeshPhongMaterial()
+                            );
+                            armMesh.material.color.setHex(0xffffff);
+                            // this.scene.add(armMesh);
+                            hand.data('armMesh', armMesh);
+                        }
+                    })
+                    .on('handLost', (hand) => {
+                        if (this.hand && this.hand.id == hand.id) {
+                            this.hand = null;
+                        } else {
+                            return
+                        }
+                        hand.fingers.forEach((finger) => {
+                            let boneMeshes = finger.data('boneMeshes');
+                            let jointMeshes = finger.data('jointMeshes');
+                            boneMeshes.forEach((mesh) => {
+                                this.scene.remove(mesh);
+                            });
+                            jointMeshes.forEach((mesh) => {
+                                this.scene.remove(mesh);
+                            });
+                            finger.data({
+                                boneMeshes: null,
+                                boneMeshes: null
+                            });
+                        });
+                        let armMesh = hand.data('armMesh');
+                        this.scene.remove(armMesh);
+                        hand.data('armMesh', null);
+                        this.renderer.render(this.scene, this.camera);
+                    })
+                    .connect();
+            }
+
+            initScene() {
+                return new Promise(resolve => {
+                    // scene
+                    const scene = new THREE.Scene();
+                    const renderer = new THREE.WebGLRenderer({
+                        alpha: true,
+                        antialias: true
+                    });
+                    const renderWidth = window.innerWidth;
+                    const renderHeight = window.innerHeight;
+
+                    renderer.setClearColor(0x000000, 0);
+                    renderer.setSize(renderWidth, renderHeight);
+                    renderer.shadowMap.enabled = true;
+                    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                    renderer.domElement.style.position = 'fixed';
+                    renderer.domElement.style.top = 0;
+                    renderer.domElement.style.left = 0;
+                    renderer.domElement.style.width = '100%';
+                    renderer.domElement.style.height = '100%';
+                    document.body.appendChild(renderer.domElement);
+
+                    // light
+                    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+                    directionalLight.position.set(0, 0.5, 1);
+                    scene.add(directionalLight);
+
+                    // camera
+                    const camera = new THREE.PerspectiveCamera(45, renderWidth / renderHeight, 1, 1000);
+                    this.camera = camera;
+                    camera.position.fromArray(this.config.cameraPosition);
+                    this.lookAt(new THREE.Vector3().fromArray(this.config.cameraLookAt), 1, 1);
+
+                    // control
+                    if (this.config.enableControl) {
+                        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+                        controls.maxPolarAngle = 0.9 * Math.PI / 2;
+                        controls.minPolarAngle = 0.9 * Math.PI / 2;
+                        controls.enableZoom = false;
+                        this.controls = controls;
+                    }
+
+                    // resize
+                    window.addEventListener('resize', () => {
+                        let renderWidth = window.innerWidth;
+                        let renderHeight = window.innerHeight;
+                        this.camera.aspect = renderWidth / renderHeight;
+                        this.camera.updateProjectionMatrix();
+                        this.renderer.setSize(renderWidth, renderHeight);
+                        this.renderer.render(this.scene, this.camera);
+                    }, false);
+
+                    scene.add(camera);
+
+                    // cube
+                    if (this.config.cube) {
+                        let geometry = new THREE.CubeGeometry(30, 45, 10);
+                        let material = new THREE.MeshPhongMaterial({ color: 0x0000cc });
+                        const cube = new THREE.Mesh(geometry, material);
+                        cube.position.set(0, 0, 0);
+                        cube.castShadow = true;
+                        cube.receiveShadow = true;
+                        scene.add(cube);
+                        this.cube = cube;
+                    }
+
+                    renderer.render(scene, camera);
+
+                    this.renderer = renderer;
+                    this.scene = scene;
+
+                    // infantry
+                    const mtlLoader = new THREE.MTLLoader();
+                    mtlLoader.load('/obj/infantry.mtl', (materials) => {
+                        materials.preload();
+                        const objLoader = new THREE.OBJLoader();
+                        // objLoader.setMaterials(materials);
+                        objLoader.load(
+                            '/obj/infantry.obj',
+                            (infantry) => {
+                                let scale = this.config.infantryScale;
+                                let position = this.config.infantryPosition;
+                                infantry.scale.set(scale, scale, scale);
+                                infantry.position.fromArray(position);
+                                let material = new THREE.MeshLambertMaterial({
+                                    color: 0xa04a30,
+                                });
+                                infantry.traverse((child) => {
+                                    if (child instanceof THREE.Mesh) {
+                                        child.material = material;
+                                        child.material.needsUpdate = true;
+                                    }
+                                });
+                                infantry.castShadow = true;
+                                scene.add(infantry);
+                                this.infantry = infantry;
+                                resolve();
+                            },
+                            (xhr) => {
+                                console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+                            },
+                            (error) => {
+                                console.log('An error happened');
+                            }
+                        );
+                    });
+                });
+            }
+
+            moveCamera(dest = null, duration = 0, steps = 100) {
+                if (dest !== null) {
+                    this._camera = {
+                        start: this.camera.position,
+                        dest: dest,
+                        duration: duration,
+                        progress: 0,
+                        steps: steps,
+                        time: (new Date()).valueOf()
+                    };
+                }
+                let c = this._camera;
+                c.progress = ((new Date()).valueOf() - c.time) / c.duration + 1 / c.steps;
+                let newPosition = c.start.clone().multiplyScalar(1 - c.progress).add(c.dest.clone().multiplyScalar(c.progress));
+                this.camera.position.fromArray(newPosition.toArray());
+                if (c.progress < 1) {
+                    setTimeout(() => {
+                        this.moveCamera();
+                    }, c.duration / c.steps);
+                }
+            }
+
+            lookAt(dest = null, duration = 0, steps = 100) {
+                if (dest !== null) {
+                    let start = this._lookAt ? this._lookAt.position : dest;
+                    this._lookAt = {
+                        start: start,
+                        dest: dest,
+                        duration: duration,
+                        progress: 0,
+                        steps: steps,
+                        time: (new Date()).valueOf()
+                    };
+                }
+                let c = this._lookAt;
+                c.progress = ((new Date()).valueOf() - c.time) / c.duration + 1 / c.steps;
+                let newPosition = c.start.clone().multiplyScalar(1 - c.progress).add(c.dest.clone().multiplyScalar(c.progress));
+                this.camera.lookAt(newPosition);
+                c.position = newPosition;
+                if (c.progress < 1) {
+                    setTimeout(() => {
+                        this.lookAt();
+                    }, c.duration / c.steps);
+                }
+            }
+
+            see(name) {
+                if (this._selected != name) {
+                    this._selected = name;
+                    let v1 = new THREE.Vector3();
+                    let v2 = new THREE.Vector3();
+                    const duration1 = 500;
+                    const duration2 = 300;
+                    if (name == 'main') {
+                        v1.fromArray(this.config.cameraPosition);
+                        v2.fromArray(this.config.cameraLookAt);
+                    } else if (name == 'gimbal') {
+                        v1.fromArray([0, 400, 150]);
+                        v2.fromArray([-50, 300, -200]);
+                    } else if (name == 'judge') {
+                        v1.fromArray([0, 300, 200]);
+                        v2.fromArray([0, 100, -200]);
+                    } else if (name == 'chassis') {
+                        v1.fromArray([0, 200, 350]);
+                        v2.fromArray([0, 50, -200]);
+                    }
+                    this.moveCamera(v1, duration1);
+                    this.lookAt(v2, duration2);
+                    this.changeText(name);
+                }
+            }
+
+            changeText(name) {
+                let elements = document.querySelectorAll('.front [for]');
+                for (let element of elements) {
+                    element.setAttribute('hidden', '');
+                }
+                elements = document.querySelectorAll('.front [for=' + name + ']');
+                for (let element of elements) {
+                    element.removeAttribute('hidden');
+                }
+                document.querySelector('.front').setAttribute('selected', name);
+            }
+
+            animate() {
+                if (this.config.cube) {
+                    this.cube.rotation.x += 0.01;
+                    this.cube.rotation.y += 0.02;
+                }
+                let handPositionX = 0;
+                let rotatingGesture = false;
+                // 计算
+                if (this.hand) {
+                    let fingers = this.hand.fingers;
+                    handPositionX = fingers[0].positions[0][0];
+                    const finger0 = new THREE.Vector3();
+                    const finger1 = new THREE.Vector3();
+                    finger0.fromArray(fingers[0].positions[4]);
+                    finger1.fromArray(fingers[2].positions[4]);
+                    rotatingGesture = finger0.distanceTo(finger1) < 35;
+                    // console.log(handPositionX, finger0.distanceTo(finger1), rotatingGesture);
+                }
+                // 旋转
+                if (Math.abs(handPositionX) < 200 && rotatingGesture) {
+                    if (!this.handPositionX) this.handPositionX = handPositionX;
+                    this.infantry.rotation.y += (handPositionX - this.handPositionX) / 70;
+                    this.handPositionX = handPositionX;
+                    this.rotatingLock = 30;
+                } else {
+                    this.handPositionX = null;
+                    if (this.rotatingLock == 0) {
+                        this.infantry.rotation.y += 0.003;
+                    } else {
+                        this.rotatingLock--;
+                    }
+                }
+
+                // 描述切换
+                if (this.hand && !rotatingGesture) {
+                    let fingers = this.hand.fingers;
+                    let bias = this.infantry.position.y;
+                    let handPositionZ = fingers[1].positions[4][1] - bias;
+                    // console.log(handPositionZ);
+                    if (handPositionZ < 100) {
+                        this.see('chassis');
+                    } else if (handPositionZ >= 100 && handPositionZ < 180) {
+                        this.see('judge');
+                    } else if (handPositionZ >= 180 && handPositionZ < 300) {
+                        this.see('gimbal');
+                    } else {
+                        this.see('main');
+                    }
+                } else {
+                    this.see('main');
+                }
+                this.renderer.render(this.scene, this.camera);
+                window.requestAnimationFrame(() => { this.animate() });
+            }
+
+            initKeyboardControl() {
+                document.addEventListener('keydown', e => {
+                    console.log(e.keyCode);
+                    let dest;
+                    switch (e.keyCode) {
+                        case 72:
+                            // h
+                            if (this.hand) {
+                                handVisibile = !handVisibile;
+                                for (finger of this.hand.fingers) {
+                                    let boneMeshes = finger.data('boneMeshes');
+                                    let jointMeshes = finger.data('jointMeshes');
+                                    let meshes = boneMeshes.concat(jointMeshes);
+                                    for (mesh of meshes) {
+                                        mesh.visible = handVisibile;
+                                    }
+                                }
+                            }
+                            break;
+                        case 37:
+                            // arrow left
+                            // if (window.infantry) {
+                            //     console.log(window.infantry.rotation);
+                            //     window.infantry.rotation.y -= 0.05;
+                            // }
+                            dest = new THREE.Vector3(0, 100, -200);
+                            this.lookAt(dest, 500);
+                            console.log('>500');
+                            break;
+                        case 39:
+                            // arrow right
+                            // if (window.infantry) {
+                            //     window.infantry.rotation.y += 0.02;
+                            // }
+                            dest = new THREE.Vector3(0, 200, -200);
+                            this.lookAt(dest, 500);
+                            console.log('>400');
+                            break;
+                    }
+                });
+            }
+        }
+
+        const iv = new InfantryViewer();
+        iv.init();
+
+    </script>
+</body>
+
+</html>

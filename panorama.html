@@ -1,0 +1,515 @@
+<html>
+
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>全景图</title>
+    <meta name="description" content="Share everything.">
+    <meta charset="utf-8">
+    <style>
+        body {
+            margin: 0;
+            color: #fff;
+        }
+
+        .front {
+            position: fixed;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 100%;
+            padding: 4vw 4vw 0 0;
+            z-index: 100;
+            display: flex;
+            align-items: flex-end;
+            flex-direction: column;
+            box-sizing: border-box;
+        }
+
+        .descriptions {
+            background: rgba(0, 0, 0, 0.78);
+            padding: 32px;
+            border-radius: 10px;
+            /* box-shadow: 0px 3px 5px rgba(0, 0, 0, 0.6); */
+            /* background: #b1b1b1; */
+            box-shadow: 0 16px 24px 2px rgba(0, 0, 0, 0.14), 0 6px 30px 5px rgba(0, 0, 0, 0.12), 0 8px 10px -5px rgba(0, 0, 0, 0.4);
+
+        }
+
+        .title {
+            font-size: 3.5vw;
+            line-height: 1;
+            margin-bottom: 16px;
+            word-break: break-all;
+            font-weight: bold;
+            font-family: '南宋书局体', '微软雅黑';
+
+            /* text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.7); */
+        }
+
+        .text {
+            line-height: 1.5;
+            font-size: 1.7vw;
+            word-break: break-word;
+            max-width: 35vw;
+            /* text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5); */
+        }
+
+        .image {
+            box-shadow: 0 16px 24px 2px rgba(0, 0, 0, 0.14), 0 6px 30px 5px rgba(0, 0, 0, 0.12), 0 8px 10px -5px rgba(0, 0, 0, 0.4);
+            border-radius: 10px;
+            max-width: 30vw;
+            margin-top: 32px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="front">
+        <div class="descriptions">
+            <div class="title"></div>
+            <div class="text"></div>
+        </div>
+        <img class="image" />
+    </div>
+    <script src="lib/leapjs/leap-0.6.4.js"></script>
+    <script src="lib/leapjs/leap-plugins-0.1.6.js"></script>
+    <script src="/js/three.min.js"></script>
+    <script src="/js/OrbitControls.js"></script>
+    <script>
+        class PanoramaViewer {
+            constructor() {
+                // state
+                this.rotatingLock = 0;
+                this.scaleLock = 0;
+                this.scaleCount = 0;
+                this.resetCount = 0;
+                this.config = {
+                    enableControl: true
+                };
+            }
+
+            async init() {
+                this.initLeap();
+                await this.initScene();
+                this.initLeap();
+                this.animate();
+                this.initClickToLocate();
+                this.initKeyboardControl();
+            }
+            initClickToLocate() {
+                document.addEventListener('click', e => {
+                    e.preventDefault();
+                    let x = (e.clientX / window.innerWidth) * 2 - 1;
+                    let y = -(e.clientY / window.innerHeight) * 2 + 1;
+                    let vector = new THREE.Vector3(x, y, 0.5).unproject(this.camera);
+                    console.log(vector);
+                });
+            }
+
+            initLeap() {
+                this.baseBoneRotation = (new THREE.Quaternion).setFromEuler(
+                    new THREE.Euler(Math.PI / 2, 0, 0)
+                );
+                Leap.loop({ background: true }, {
+                    hand: (hand) => {
+                        if (this.hand && this.hand.id == hand.id) {
+                            this.hand = hand;
+                        } else {
+                            return
+                        }
+                        hand.fingers.forEach((finger) => {
+                            finger.data('boneMeshes').forEach((mesh, i) => {
+                                let bone = finger.bones[i];
+                                mesh.position.fromArray(bone.center());
+                                mesh.setRotationFromMatrix(
+                                    (new THREE.Matrix4).fromArray(bone.matrix())
+                                );
+                                mesh.quaternion.multiply(this.baseBoneRotation);
+                            });
+                            finger.data('jointMeshes').forEach((mesh, i) => {
+                                let bone = finger.bones[i];
+                                if (bone) {
+                                    mesh.position.fromArray(bone.prevJoint);
+                                } else {
+                                    // special case for the finger tip joint sphere:
+                                    bone = finger.bones[i - 1];
+                                    mesh.position.fromArray(bone.nextJoint);
+                                }
+                            });
+                        });
+                        let armMesh = hand.data('armMesh');
+                        armMesh.position.fromArray(hand.arm.center());
+                        armMesh.setRotationFromMatrix(
+                            (new THREE.Matrix4).fromArray(hand.arm.matrix())
+                        );
+                        armMesh.quaternion.multiply(this.baseBoneRotation);
+                        armMesh.scale.x = hand.arm.width / 2;
+                        armMesh.scale.z = hand.arm.width / 4;
+                        this.renderer.render(this.scene, this.camera);
+                    }
+                })
+                    .use('handHold')
+                    .use('handEntry')
+                    .on('handFound', (hand) => {
+                        if (this.hand) {
+                            return
+                        } else {
+                            this.hand = hand;
+                        }
+                        hand.fingers.forEach((finger) => {
+                            let boneMeshes = [];
+                            let jointMeshes = [];
+                            finger.bones.forEach((bone) => {
+                                // create joints
+                                // CylinderGeometry(radiusTop, radiusBottom, height, radiusSegments, heightSegments, openEnded)
+                                let boneMesh = new THREE.Mesh(
+                                    new THREE.CylinderGeometry(5, 5, bone.length),
+                                    new THREE.MeshLambertMaterial()
+                                );
+                                boneMesh.material.color.setHex(0x282828);
+                                this.scene.add(boneMesh);
+                                boneMeshes.push(boneMesh);
+                            });
+                            for (let i = 0; i < finger.bones.length + 1; i++) {
+                                let jointMesh = new THREE.Mesh(
+                                    new THREE.SphereGeometry(6),
+                                    new THREE.MeshLambertMaterial()
+                                );
+                                jointMesh.material.color.setHex(0x282828);
+                                this.scene.add(jointMesh);
+                                jointMeshes.push(jointMesh);
+                            }
+                            finger.data('boneMeshes', boneMeshes);
+                            finger.data('jointMeshes', jointMeshes);
+                        });
+                        if (hand.arm) { // 2.0.3+ have arm api,
+                            // CylinderGeometry(radiusTop, radiusBottom, height, radiusSegments, heightSegments, openEnded)
+                            let armMesh = new THREE.Mesh(
+                                new THREE.CylinderGeometry(1, 1, hand.arm.length, 64),
+                                new THREE.MeshPhongMaterial()
+                            );
+                            armMesh.material.color.setHex(0xffffff);
+                            // this.scene.add(armMesh);
+                            hand.data('armMesh', armMesh);
+                        }
+                    })
+                    .on('handLost', (hand) => {
+                        if (this.hand && this.hand.id == hand.id) {
+                            this.hand = null;
+                        } else {
+                            return
+                        }
+                        hand.fingers.forEach((finger) => {
+                            let boneMeshes = finger.data('boneMeshes');
+                            let jointMeshes = finger.data('jointMeshes');
+                            boneMeshes.forEach((mesh) => {
+                                this.scene.remove(mesh);
+                            });
+                            jointMeshes.forEach((mesh) => {
+                                this.scene.remove(mesh);
+                            });
+                            finger.data({
+                                boneMeshes: null,
+                                boneMeshes: null
+                            });
+                        });
+                        let armMesh = hand.data('armMesh');
+                        this.scene.remove(armMesh);
+                        hand.data('armMesh', null);
+                        this.renderer.render(this.scene, this.camera);
+                    })
+                    .connect();
+            }
+
+            initScene() {
+                return new Promise(resolve => {
+                    const renderWidth = window.innerWidth;
+                    const renderHeight = window.innerHeight;
+                    // camera
+                    let camera = new THREE.PerspectiveCamera(45, renderWidth / renderHeight, 1, 2000);
+                    camera.position.fromArray([0, 100, 200]);
+                    camera.lookAt(new THREE.Vector3(0, 50, 0));
+                    camera.target = new THREE.Vector3(0, 0, 0);
+                    // panorama
+                    let geometry = new THREE.SphereBufferGeometry(800, 100, 100);
+                    geometry.scale(-1, 1, 1);
+                    let material = new THREE.MeshBasicMaterial({
+                        map: new THREE.TextureLoader().load('img/pano3-note.jpg')
+                    });
+                    let mesh = new THREE.Mesh(geometry, material);
+                    mesh.rotation.x = 0.77;
+                    mesh.rotation.y = -5.20;
+                    // scene
+                    let scene = new THREE.Scene();
+                    scene.background = new THREE.Color(0xf0f0f0);
+                    scene.add(mesh);
+                    // resize
+                    window.addEventListener('resize', () => {
+                        let renderWidth = window.innerWidth;
+                        let renderHeight = window.innerHeight;
+                        this.camera.aspect = renderWidth / renderHeight;
+                        this.camera.updateProjectionMatrix();
+                        this.renderer.setSize(renderWidth, renderHeight);
+                        this.renderer.render(this.scene, this.camera);
+                    }, false);
+                    // renderer
+                    let renderer = new THREE.WebGLRenderer();
+                    renderer.setPixelRatio(window.devicePixelRatio);
+                    renderer.setSize(renderWidth, renderHeight);
+                    document.body.appendChild(renderer.domElement);
+                    renderer.render(scene, camera);
+                    this.renderer = renderer;
+                    this.scene = scene;
+                    this.camera = camera;
+                    this.mesh = mesh;
+                    // control
+                    // if (this.config.enableControl) {
+                    //     const controls = new THREE.OrbitControls(camera, renderer.domElement);
+                    //     // controls.maxPolarAngle = 0.9 * Math.PI / 2;
+                    //     // controls.minPolarAngle = 0.9 * Math.PI / 2;
+                    //     controls.enablePan = true;
+                    //     controls.enableZoom = false;
+                    //     this.controls = controls;
+                    // }
+                    resolve();
+                });
+            }
+
+            moveCamera(dest = null, duration = 1, steps = 100) {
+                if (dest !== null) {
+                    this._camera = {
+                        start: this.camera.position,
+                        dest: dest,
+                        duration: duration,
+                        progress: 0,
+                        steps: steps,
+                        time: (new Date()).valueOf()
+                    };
+                }
+                let c = this._camera;
+                c.progress = ((new Date()).valueOf() - c.time) / c.duration + 1 / c.steps;
+                let newPosition = c.start.clone().multiplyScalar(1 - c.progress).add(c.dest.clone().multiplyScalar(c.progress));
+                this.camera.position.fromArray(newPosition.toArray());
+                if (c.progress < 1) {
+                    setTimeout(() => {
+                        this.moveCamera();
+                    }, c.duration / c.steps);
+                }
+            }
+
+            lookAt(dest = null, duration = 0, steps = 100) {
+                if (dest !== null) {
+                    let start = this._lookAt ? this._lookAt.position : dest;
+                    this._lookAt = {
+                        start: start,
+                        dest: dest,
+                        duration: duration,
+                        progress: 0,
+                        steps: steps,
+                        time: (new Date()).valueOf()
+                    };
+                }
+                let c = this._lookAt;
+                c.progress = ((new Date()).valueOf() - c.time) / c.duration + 1 / c.steps;
+                let newPosition = c.start.clone().multiplyScalar(1 - c.progress).add(c.dest.clone().multiplyScalar(c.progress));
+                this.camera.lookAt(newPosition);
+                c.position = newPosition;
+                if (c.progress < 1) {
+                    setTimeout(() => {
+                        this.lookAt();
+                    }, c.duration / c.steps);
+                }
+            }
+
+            rotate(dest = null, duration = 1, steps = 100) {
+                if (dest !== null) {
+                    let r = this.mesh.rotation;
+                    this._rotate = {
+                        start: new THREE.Vector2(r.x, r.y),
+                        dest: dest,
+                        duration: duration,
+                        progress: 0,
+                        steps: steps,
+                        time: (new Date()).valueOf()
+                    };
+                }
+                let c = this._rotate;
+                c.progress = ((new Date()).valueOf() - c.time) / c.duration + 1 / c.steps;
+                let newPosition = c.start.clone().multiplyScalar(1 - c.progress).add(c.dest.clone().multiplyScalar(c.progress));
+                this.mesh.rotation.x = newPosition.x;
+                this.mesh.rotation.y = newPosition.y;
+                if (c.progress < 1) {
+                    setTimeout(() => {
+                        this.rotate();
+                    }, c.duration / c.steps);
+                }
+            }
+
+            animate() {
+                let handPositionX = 0;
+                let handPositionY = 0;
+                let rotatingGesture = false;
+                // 计算
+                if (this.hand) {
+                    let fingers = this.hand.fingers;
+                    handPositionX = fingers[0].positions[0][0];
+                    handPositionY = fingers[0].positions[0][2];
+                    const finger0 = new THREE.Vector3();
+                    const finger1 = new THREE.Vector3();
+                    finger0.fromArray(fingers[0].positions[4]);
+                    finger1.fromArray(fingers[2].positions[4]);
+                    rotatingGesture = finger0.distanceTo(finger1) < 45;
+                    // console.log(handPositionX, finger0.distanceTo(finger1), rotatingGesture);
+                }
+                // 旋转
+                if (Math.abs(handPositionX) < 200 && rotatingGesture) {
+                    if (!this.handPositionX) this.handPositionX = handPositionX;
+                    if (!this.handPositionY) this.handPositionY = handPositionY;
+                    this.mesh.rotation.y += (handPositionX - this.handPositionX) / 150;
+                    this.mesh.rotation.x += (handPositionY - this.handPositionY) / 150;
+                    this.handPositionX = handPositionX;
+                    this.handPositionY = handPositionY;
+                    this.rotatingLock = 30;
+                    console.log(handPositionY);
+                } else {
+                    this.handPositionX = null;
+                    this.handPositionY = null;
+                    if (this.rotatingLock == 0) {
+                        // this.camera.rotation.y += 0.0003;
+                    } else {
+                        this.rotatingLock--;
+                    }
+                }
+                // 校园导航
+                let pinnedPlaces = [
+                    {
+                        name: '食堂',
+                        rotation: [0.75, -5.48],
+                        description: '中英食堂以其中西合璧的内饰风格深受学生喜爱，不仅为学生提供了丰富的美食，同时也是中外师生休闲娱乐的好场所。',
+                        photo: 'img/cafeteria.jpg',
+                    },
+                    {
+                        name: '操场',
+                        rotation: [0.96, -5.12],
+                        description: '操场是中英学生肆意挥洒青春的场地，这里曾留下学生军训时的英姿飒爽，这里曾封存着大学最美的记忆。',
+                        photo: 'img/playground.jpg',
+                    },
+                    {
+                        name: '英国茶室',
+                        rotation: [0.89, -5.72],
+                        description: '英国茶室是校园内最具英式特色的建筑，西式的咖啡吧与深棕木制桌椅交相呼应，带给学院师生不一样的体验。',
+                        photo: 'img/tearoom.jpg',
+                    },
+                    {
+                        name: '教学楼',
+                        rotation: [1.28, -4.14],
+                        description: '作为校区内唯一一幢七层建筑，她记录了清晨朗朗的读书声，也珍藏着学生深夜挑灯夜读的模样，筑梦启航，从这里开始。',
+                        photo: '',
+                    },
+                    {
+                        name: '第五学生宿舍',
+                        rotation: [0.97, -3.90],
+                        description: '第五宿舍是校区内最大的一幢宿舍楼，C字形的特色建筑风格让她成为校区内一道独特且靓丽的风景线。',
+                        photo: '',
+                    },
+                    {
+                        name: '图书馆',
+                        rotation: [0.74, -3.19],
+                        description: '图书馆建于1914年，至今已走过105个年头，是具有普鲁士风格的历史保护建筑，她虽历经风雨却也见证了复兴园的繁花似锦。',
+                        photo: 'img/library.jpg',
+                    },
+                ];
+                // if (rotatingGesture) {
+                //     this.camera.rotation.x = 0.95;
+                //     if (handPositionX > 200) { handPositionX = 200; }
+                //     if (handPositionX < -200) { handPositionX = -200; }
+                //     this.camera.rotation.y = -4.35 - 1.35 * (handPositionX / 200);//-3 -5.7
+                // }
+                // console.log(this.camera.rotation.x, this.camera.rotation.y, handPositionX, rotatingGesture);
+                // 放大
+                if (this.scaleCount > 0 && !rotatingGesture) {
+                    this.scaleCount -= 1;
+                } else if (rotatingGesture && this.scaleLock == 0) {
+                    this.moveCamera(new THREE.Vector3(0, 100, -300), 1500, 500);
+                    // this.moveCamera(new THREE.Vector3(0, 100, -300), 1500, 500);
+                    this.scaleLock = 1;
+                    this.scaleCount = 50;
+                } else if (!rotatingGesture && this.scaleLock == 1) {
+                    this.moveCamera(new THREE.Vector3(0, 100, -500), 4000, 500);
+                    this.scaleLock = 0;
+                    this.scaleCount = 20;
+                    this.resetCount = 500;
+                    // 定位到最近的标记地点
+                    let c = [this.mesh.rotation.x, this.mesh.rotation.y];
+                    let clostestPlace;
+                    let minDistance = Infinity;
+                    for (let place of pinnedPlaces) {
+                        let r = place.rotation;
+                        let distance = (c[0] - r[0]) * (c[0] - r[0]) + (c[1] - r[1]) * (c[1] - r[1]);
+                        if (distance < minDistance) {
+                            clostestPlace = place;
+                            minDistance = distance;
+                        }
+                    }
+                    let r = clostestPlace.rotation;
+                    this.rotate(new THREE.Vector2(r[0], r[1]), 800);
+                    this.display(clostestPlace.name, clostestPlace.description, clostestPlace.photo);
+                    console.log(clostestPlace.name);
+                    // this.lookAt(clostestPlace.position, 500);
+                }
+                if (!this.hand && this.resetCount > 0) {
+                    this.resetCount -= 1;
+                } else if (this.resetCount == 0) {
+                    this.display('上海理工大学<br>中英国际学院', '<span style="font-size: 1.2vw;">上海理工大学中英国际学院（SBC）由上海理工大学（USST）与英国北方大学联合会（NCUK）的九所成员大学在上海共同创办。于2006年经中国教育部正式批准成立，是上海理工大学下属的非独立法人二级学院，也是目前国内领先的成体系、成规模、集约化引进海外一流大学优质教育资源的国际化中外合作大学学院。</span>');
+                    this.moveCamera(new THREE.Vector3(0, 100, 200), 1500, 500);
+                    this.resetCount = -1;
+                }
+                // 渲染
+                this.renderer.render(this.scene, this.camera);
+                requestAnimationFrame(() => { this.animate() });
+            }
+
+            display(title, description, photo = '') {
+                document.querySelector('.descriptions .title').innerHTML = title;
+                document.querySelector('.descriptions .text').innerHTML = description;
+                let image = document.querySelector('.image');
+                if (photo == '') {
+                    image.style.display = 'none';
+                } else {
+                    image.style.display = 'block';
+                    image.src = photo;
+                }
+            }
+
+            initKeyboardControl() {
+                document.addEventListener('keydown', e => {
+                    console.log(e.keyCode);
+                    let dest;
+                    switch (e.keyCode) {
+                        case 37:
+                            // arrow left
+                            this.mesh.rotation.y -= 0.01;
+                            break;
+                        case 39:
+                            // arrow right
+                            this.mesh.rotation.y += 0.01;
+                            break;
+                        case 38:
+                            // arrow up
+                            this.mesh.rotation.x -= 0.01;
+                            break;
+                        case 40:
+                            // arrow down
+                            this.mesh.rotation.x += 0.01;
+                            break;
+                    }
+                    console.log(this.mesh.rotation.x.toFixed(2), ',', this.mesh.rotation.y.toFixed(2));
+                });
+            }
+        }
+        let pv = new PanoramaViewer();
+        pv.init();
+    </script>
+</body>
+
+</html>
