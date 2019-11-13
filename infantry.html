@@ -279,12 +279,12 @@
 
                     // infantry
                     const mtlLoader = new THREE.MTLLoader();
-                    mtlLoader.load('/obj/infantry.mtl', (materials) => {
+                    mtlLoader.load('obj/infantry.mtl', (materials) => {
                         materials.preload();
                         const objLoader = new THREE.OBJLoader();
                         // objLoader.setMaterials(materials);
                         objLoader.load(
-                            '/obj/infantry.obj',
+                            'obj/infantry.obj',
                             (infantry) => {
                                 let scale = this.config.infantryScale;
                                 let position = this.config.infantryPosition;
