@@ -63,7 +63,41 @@
     <script src="js/OBJLoader.js"></script>
     <script src="js/OrbitControls.js"></script>
     <script src="js/slider.js"></script>
-    <script>
+    <script>function throttle(fn, wait) {
+            let callback = fn;
+            let timerId = null;
+
+            // 是否是第一次执行
+            let firstInvoke = true;
+
+            function throttled() {
+                let context = this;
+                let args = arguments;
+
+                // 如果是第一次触发，直接执行
+                if (firstInvoke) {
+                    callback.apply(context, args);
+                    firstInvoke = false;
+                    return;
+                }
+
+                // 如果定时器已存在，直接返回。
+                if (timerId) {
+                    return;
+                }
+
+                timerId = setTimeout(function () {
+                    // 注意这里 将 clearTimeout 放到 内部来执行了
+                    clearTimeout(timerId);
+                    timerId = null;
+
+                    callback.apply(context, args);
+                }, wait);
+            }
+
+            // 返回一个闭包
+            return throttled;
+        }
 
         class InfantryViewer {
             constructor() {
@@ -363,6 +397,9 @@
 
             see(name) {
                 if (this._selected != name) {
+
+                    let audio = new Audio('sound/Buttons and Navigation/Tab 1.mp3');
+                    audio.play();
                     this._selected = name;
                     let v1 = new THREE.Vector3();
                     let v2 = new THREE.Vector3();
@@ -420,9 +457,16 @@
                 // 旋转
                 if (Math.abs(handPositionX) < 200 && rotatingGesture) {
                     if (!this.handPositionX) this.handPositionX = handPositionX;
+                    let a = this.infantry.rotation.y;
                     this.infantry.rotation.y += (handPositionX - this.handPositionX) / 70;
                     this.handPositionX = handPositionX;
                     this.rotatingLock = 30;
+                    let b = this.infantry.rotation.y;
+                    const threshold = 0.3;
+                    if (Math.floor(a / threshold) - Math.floor(b / threshold) != 0) {
+                        let audio = new Audio('sound/Buttons and Navigation/Button 7.mp3');
+                        audio.play();
+                    }
                 } else {
                     this.handPositionX = null;
                     if (this.rotatingLock == 0) {
@@ -438,14 +482,15 @@
                     let bias = this.infantry.position.y;
                     let handPositionZ = fingers[1].positions[4][1] - bias;
                     // console.log(handPositionZ);
+                    if (!this._see) this._see = throttle(this.see, 300);
                     if (handPositionZ < 100) {
-                        this.see('chassis');
+                        this._see('chassis');
                     } else if (handPositionZ >= 100 && handPositionZ < 180) {
-                        this.see('judge');
+                        this._see('judge');
                     } else if (handPositionZ >= 180 && handPositionZ < 300) {
-                        this.see('gimbal');
+                        this._see('gimbal');
                     } else {
-                        this.see('main');
+                        this._see('main');
                     }
                 } else {
                     this.see('main');
